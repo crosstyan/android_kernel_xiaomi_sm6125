@@ -4,6 +4,8 @@
 #include <linux/bits.h>
 #include <linux/bitmap.h>
 #include <linux/string.h>
+#include <linux/sched.h>
+#include <linux/cred.h>
 
 /********/
 /* ENUM */

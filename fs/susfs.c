@@ -325,7 +325,11 @@ out_copy_to_user:
 /* sus_kstat */
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 static DEFINE_MUTEX(susfs_mutex_lock_sus_kstat);
-static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, 14);
+/* 4.14: 2^10 buckets (8 KiB) instead of 2^14 (128 KiB) — the abl image_size
+ * gate on laurus leaves no room for the oversized static table; entries here
+ * are a handful of spoofed kstat targets.
+ */
+static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, 10);
 
 extern int calculate_f_flags_wrapper(struct vfsmount *mnt);
 extern int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf);
@@ -1836,12 +1840,16 @@ static int watch_one_dir(struct watch_dir *wd)
  * synchronize_srcu on the same SRCU struct, causing a permanent deadlock).
  * Cleanup is deferred to a delayed_work that runs outside the SRCU context.
  */
-static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
-											struct inode *inode, struct inode *dir,
-											const struct qstr *file_name, u32 cookie)
+static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,
+											struct inode *inode,
+											struct fsnotify_mark *inode_mark,
+											struct fsnotify_mark *vfsmount_mark,
+											u32 mask, const void *data, int data_type,
+											const unsigned char *file_name, u32 cookie,
+											struct fsnotify_iter_info *iter_info)
 {
-	if (!file_name || file_name->len != 7 ||
-	    memcmp(file_name->name, "Android", 7))
+	if (!file_name || strlen(file_name) != 7 ||
+	    memcmp(file_name, "Android", 7))
 		return 0;
 
 	if (test_and_set_bit(0, &sdcard_cleanup_scheduled))
@@ -1854,7 +1862,7 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 }
 
 static const struct fsnotify_ops fsnotify_ops = {
-	.handle_inode_event = susfs_handle_sdcard_inode_event,
+	.handle_event = susfs_handle_sdcard_inode_event,
 };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
@@ -1869,7 +1877,7 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 	fsnotify_init_mark(m, g);
 	m->mask = mask;
 
-	if (fsnotify_add_inode_mark(m, inode, 0)) {
+	if (fsnotify_add_mark(m, inode, NULL, 0)) {
 		fsnotify_put_mark(m);
 		return -EINVAL;
 	}
