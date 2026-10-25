@@ -62,6 +62,9 @@
 #include <linux/oom.h>
 #include <linux/compat.h>
 #include <linux/vmalloc.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#endif
 
 #include <linux/uaccess.h>
 #include <asm/mmu_context.h>
@@ -1881,6 +1884,8 @@ out_ret:
 }
 
 #ifdef CONFIG_KSU_SUSFS
+/* BakaSU v4.2.0-rc3 predates KernelSU module preinit */
+#define KSU_NO_PREINIT
 extern struct static_key_true ksu_su_compat_enabled;
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
@@ -1897,12 +1902,46 @@ extern int ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_
 #endif // #ifndef KSU_NO_PREINIT
 #endif // #ifdef CONFIG_KSU_SUSFS
 
+/*
+ * 4.14: the bprm setup lives in __do_execve_file(), so the SUSFS hooks wrap it here
+ * (5.10 places them in do_execveat_common() around bprm_execve()).
+ */
 static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
 			      struct user_arg_ptr envp,
 			      int flags)
 {
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+	int retval;
+#ifdef CONFIG_KSU_SUSFS
+	bool is_su_session = false;
+
+	if (IS_ERR(filename))
+		return PTR_ERR(filename);
+
+	if (likely(susfs_is_current_proc_no_su()))
+		goto orig_flow;
+
+	if (static_branch_likely(&ksu_su_compat_enabled)) {
+		if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+			is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+		} else {
+			is_su_session = !ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+		}
+	}
+
+orig_flow:
+	/* __do_execve_file() putname()s filename; the post hook still reads it */
+	if (unlikely(is_su_session))
+		filename->refcnt++;
+#endif
+	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
+#ifdef CONFIG_KSU_SUSFS
+	if (unlikely(is_su_session)) {
+		(void)ksu_handle_post_execveat_sucompat(&fd, &filename, &argv, &envp, &flags, &retval);
+		putname(filename);
+	}
+#endif
+	return retval;
 }
 
 int do_execve_file(struct file *file, void *__argv, void *__envp)
