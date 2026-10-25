@@ -1341,6 +1341,19 @@ bypass_orig_flow:
 
 	mnt->mnt.mnt_flags = old->mnt.mnt_flags;
 	mnt->mnt.mnt_flags &= ~(MNT_WRITE_HOLD|MNT_MARKED|MNT_INTERNAL);
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	/* - VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT describes this mount's own
+	 *   mnt_id only: if it is not an unshared clone its id comes from
+	 *   mnt_id_ida, so the bit must never be inherited from old, or
+	 *   mnt_free_id() would leak that freshly allocated id.
+	 * - For the unshared case mnt_flags is only assigned above, i.e. after
+	 *   the allocation through susfs_alloc_unshare_ksu_vfsmnt(), so the
+	 *   bit has to be set here and not in the allocator.
+	 */
+	mnt->mnt.mnt_flags &= ~VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT;
+	if (unlikely(is_mnt_ksu_unshared))
+		mnt->mnt.mnt_flags |= VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	/* Don't allow unprivileged users to change mount flags */
 	if (flag & CL_UNPRIVILEGED) {
 		mnt->mnt.mnt_flags |= MNT_LOCK_ATIME;
@@ -1399,6 +1412,15 @@ bypass_orig_flow:
 	return mnt;
 
  out_free:
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	/* - mnt->mnt.mnt_flags is only copied from old further up, so an
+	 *   unshared clone that fails before that point has to be marked here,
+	 *   otherwise mnt_free_id() would ida_remove() old->mnt_id while the
+	 *   original mount is still using it.
+	 */
+	if (unlikely(is_mnt_ksu_unshared))
+		mnt->mnt.mnt_flags |= VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	mnt_free_id(mnt);
 	free_vfsmnt(mnt);
 	return ERR_PTR(err);
@@ -3891,7 +3913,18 @@ struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt) {
 	for (; mnt && mnt->mnt_parent && mnt != mnt->mnt_parent && mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }
 	mntget(&mnt->mnt);
 	if (!mnt->mnt.mnt_root || IS_ERR(mnt->mnt.mnt_root)) {
+		struct mount *orig_mnt = real_mount(vfsmnt);
+
 		mntput(&mnt->mnt);
+		/* - Every caller drops exactly one vfsmount and one root
+		 *   reference from the return value, so the fallback has to
+		 *   return the original vfsmount with its own pair taken,
+		 *   otherwise they would mntput()/dput() the caller's own
+		 *   references and underflow the mount.
+		 */
+		mntget(&orig_mnt->mnt);
+		if (orig_mnt->mnt.mnt_root && !IS_ERR(orig_mnt->mnt.mnt_root))
+			dget(orig_mnt->mnt.mnt_root);
 		unlock_mount_hash();
 		return vfsmnt;
 	}
