@@ -1861,8 +1861,20 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,
 	return 0;
 }
 
+/*
+ * 4.14: fsnotify_final_mark_destroy() unconditionally calls ops->free_mark()
+ * after the last reference to a mark is dropped, so leaving it NULL crashes
+ * the kernel as soon as the mark is destroyed (error path or group teardown).
+ * The mark is kmalloc'ed by add_mark_on_inode().
+ */
+static void susfs_free_mark(struct fsnotify_mark *mark)
+{
+	kfree(mark);
+}
+
 static const struct fsnotify_ops fsnotify_ops = {
 	.handle_event = susfs_handle_sdcard_inode_event,
+	.free_mark = susfs_free_mark,
 };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
@@ -1881,6 +1893,17 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 		fsnotify_put_mark(m);
 		return -EINVAL;
 	}
+	/*
+	 * 4.14: fsnotify_init_mark() hands the caller one reference and
+	 * fsnotify_add_mark() takes a separate one for group->marks_list.
+	 * A group that keeps no reference of its own to the mark (inotify keeps
+	 * its idr reference, fanotify drops it right after adding) has to drop
+	 * the initial one here: otherwise the mark never reaches refcnt 0,
+	 * fsnotify_destroy_group() cannot destroy it and both the group and the
+	 * watched inode stay pinned forever.
+	 * The group list reference keeps the mark alive while it is attached.
+	 */
+	fsnotify_put_mark(m);
 	*out = m;
 	return 0;
 }
