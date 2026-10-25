@@ -1884,8 +1884,6 @@ out_ret:
 }
 
 #ifdef CONFIG_KSU_SUSFS
-/* BakaSU v4.2.0-rc3 predates KernelSU module preinit */
-#define KSU_NO_PREINIT
 extern struct static_key_true ksu_su_compat_enabled;
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
@@ -1894,12 +1892,14 @@ extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
 				void *envp, int *flags);
 extern int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
 				void *envp, int *flags, int *retval);
-#ifndef KSU_NO_PREINIT
-extern int ksu_setup_preinit_file(struct filename **filename_ptr, struct user_arg_ptr *argv_user);
+/* BakaSU main builds the preinit runner when the target UAPI headers are
+ * installed; declare these weak so a driver built with KSU_NO_PREINIT links.
+ */
+extern int ksu_setup_preinit_file(struct filename **filename_ptr,
+				struct user_arg_ptr *argv_user) __weak;
 extern int ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_ptr,
 				void *argv_user, void *envp_user,
-				int *flags, int *retval, int *preinit_fd);
-#endif // #ifndef KSU_NO_PREINIT
+				int *flags, int *retval, int *preinit_fd) __weak;
 #endif // #ifdef CONFIG_KSU_SUSFS
 
 /*
@@ -1914,9 +1914,14 @@ static int do_execveat_common(int fd, struct filename *filename,
 	int retval;
 #ifdef CONFIG_KSU_SUSFS
 	bool is_su_session = false;
+	int preinit_fd = -1;
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
+
+	/* BakaSU main: swap PID1's "init selinux_setup" for the preinit runner */
+	if (ksu_setup_preinit_file)
+		preinit_fd = ksu_setup_preinit_file(&filename, &argv);
 
 	if (likely(susfs_is_current_proc_no_su()))
 		goto orig_flow;
@@ -1930,16 +1935,19 @@ static int do_execveat_common(int fd, struct filename *filename,
 	}
 
 orig_flow:
-	/* __do_execve_file() putname()s filename; the post hook still reads it */
-	if (unlikely(is_su_session))
+	/* __do_execve_file() putname()s filename; the post hooks still read it */
+	if (unlikely(is_su_session) || preinit_fd > 0)
 		filename->refcnt++;
 #endif
 	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
 #ifdef CONFIG_KSU_SUSFS
-	if (unlikely(is_su_session)) {
+	if (preinit_fd > 0 && ksu_preinit_handle_post_execveat)
+		(void)ksu_preinit_handle_post_execveat(&fd, &filename, &argv, &envp,
+						       &flags, &retval, &preinit_fd);
+	if (unlikely(is_su_session))
 		(void)ksu_handle_post_execveat_sucompat(&fd, &filename, &argv, &envp, &flags, &retval);
+	if (unlikely(is_su_session) || preinit_fd > 0)
 		putname(filename);
-	}
 #endif
 	return retval;
 }
