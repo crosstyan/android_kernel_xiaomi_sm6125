@@ -884,7 +884,17 @@ static int show_smap(struct seq_file *m, void *v, int is_pid)
 #ifdef CONFIG_SHMEM
 	/* In case of smaps_rollup, reset the value from previous vma */
 	mss->check_shmem_swap = false;
+	/*
+	 * 5.10 keeps this shmem accounting in smap_gather_stats(), which the
+	 * SUS_MAP hook skips as a whole; here it is open coded, so exclude a
+	 * sus_map vma explicitly or its swap usage leaks into smaps_rollup.
+	 */
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	if (!sus_map &&
+	    vma->vm_file && shmem_mapping(vma->vm_file->f_mapping)) {
+#else
 	if (vma->vm_file && shmem_mapping(vma->vm_file->f_mapping)) {
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		/*
 		 * For shared or readonly shmem mappings we know that all
 		 * swapped out pages belong to the shmem object, and we can
