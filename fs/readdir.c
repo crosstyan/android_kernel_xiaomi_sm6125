@@ -286,6 +286,8 @@ static int filldir(struct dir_context *ctx, const char *name, int namlen,
 	}
 	if (susfs_is_inode_sus_path(inode)) {
 		iput(inode);
+		/* don't let the -EINVAL set above surface as an empty listing */
+		buf->error = 0;
 		return 0;
 	}
 	iput(inode);
@@ -408,6 +410,8 @@ static int filldir64(struct dir_context *ctx, const char *name, int namlen,
 	}
 	if (susfs_is_inode_sus_path(inode)) {
 		iput(inode);
+		/* don't let the -EINVAL set above surface as an empty listing */
+		buf->error = 0;
 		return 0;
 	}
 	iput(inode);
@@ -653,6 +657,8 @@ static int compat_filldir(struct dir_context *ctx, const char *name, int namlen,
 	}
 	if (susfs_is_inode_sus_path(inode)) {
 		iput(inode);
+		/* don't let the -EINVAL set above surface as an empty listing */
+		buf->error = 0;
 		return 0;
 	}
 	iput(inode);

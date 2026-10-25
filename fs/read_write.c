@@ -570,7 +570,10 @@ static inline void file_pos_write(struct file *file, loff_t pos)
 
 #ifdef CONFIG_KSU_SUSFS
 extern struct static_key_true ksu_is_init_rc_hook_enabled;
-extern __attribute__((cold)) void ksu_handle_sys_read(unsigned int fd);
+/* BakaSU-rc3 links the 3-arg form (drivers/kernelsu/runtime/ksud_integration.c),
+ * so the 1-arg prototype copied from the 5.10 patch does not match its ABI. */
+extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd,
+		char __user **buf_ptr, size_t *count_ptr);
 #endif
 
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
@@ -580,7 +583,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 
 #ifdef CONFIG_KSU_SUSFS
 	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
-		ksu_handle_sys_read(fd);
+		ksu_handle_sys_read(fd, &buf, &count);
 #endif
 
 	f = fdget_pos(fd);
